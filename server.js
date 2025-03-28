@@ -30,12 +30,13 @@ const messageSchema = new mongoose.Schema({
   room: String,
   message: String,
   timestamp: { type: Date, default: Date.now },
+  replyTo: { type: mongoose.Schema.Types.ObjectId, ref: "Message", default: null }, // Reply reference
 });
 
 const Message = mongoose.model("Message", messageSchema);
 
 // Track rooms and users
-let rooms = { "interactive-session": [], "Room 2": [] }; // Updated Room 1 → interactive-session
+let rooms = { "interactive-session": [], "Room 2": [] };
 
 // WebSocket Connection
 io.on("connection", (socket) => {
@@ -54,22 +55,31 @@ io.on("connection", (socket) => {
     // Notify others in the room
     socket.broadcast.to(room).emit("message", { username: "Chat Bot", message: `${username} has joined the chat` });
 
-    // Send chat history
-    const chatHistory = await Message.find({ room }).sort({ timestamp: 1 });
+    // Send chat history with replies populated
+    const chatHistory = await Message.find({ room }).sort({ timestamp: 1 }).populate("replyTo", "username message");
     socket.emit("chatHistory", chatHistory);
 
     // Update users list
     io.to(room).emit("roomUsers", { users: rooms[room].map((user) => user.username) });
   });
 
-  // Handle chat messages
-  socket.on("chatMessage", async ({ room, username, message }) => {
+  // Handle chat messages (including replies)
+  socket.on("chatMessage", async ({ room, username, message, replyTo }) => {
     if (!room || !message) return;
 
-    const newMessage = new Message({ username, room, message });
+    const newMessage = new Message({
+      username,
+      room,
+      message,
+      replyTo, // Store reply message ID
+    });
+
     await newMessage.save();
 
-    io.to(room).emit("message", { username, message });
+    // Fetch the saved message with reply details
+    const savedMessage = await Message.findById(newMessage._id).populate("replyTo", "username message");
+
+    io.to(room).emit("message", savedMessage);
   });
 
   // Handle user leaving room
